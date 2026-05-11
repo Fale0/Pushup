@@ -1063,27 +1063,35 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
     
+    # Сначала запускаем веб-сервер с health check (быстро!)
+    app = web.Application()
+    app.router.add_get("/health", health_check)
+    app.router.add_get("/", health_check)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Web server started on port {PORT} (health check ready)")
+    
+    # Теперь неспеша инициализируем базу и бота
     await init_db()
     
     asyncio.create_task(reminder_checker())
     asyncio.create_task(weekly_reports())
     asyncio.create_task(keep_alive_self_ping())
     
-    app = web.Application()
-    app.router.add_get("/health", health_check)
-    app.router.add_get("/", health_check)
-    
+    # Подключаем вебхук после того как всё готово
     handler = SimpleRequestHandler(dispatcher=dp, bot=bot)
     handler.register(app, path="/webhook")
     setup_application(app, dp, bot=bot)
     
-    await bot.set_webhook(f"{WEBHOOK_URL}/webhook", drop_pending_updates=True)
-    logger.info(f"Webhook: {WEBHOOK_URL}/webhook")
+    try:
+        await bot.set_webhook(f"{WEBHOOK_URL}/webhook", drop_pending_updates=True)
+        logger.info(f"Webhook: {WEBHOOK_URL}/webhook")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
     
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
     logger.info(f"Bot running on port {PORT}")
     
     try:
