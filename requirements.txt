@@ -1,6 +1,9 @@
-aiogram==3.5.0
-aiohttp==3.9.5
-SQLAlchemy==2.0.30
-asyncpg==0.29.0
+aiogram==3.17.0
+aiohttp==3.11.14
+SQLAlchemy==2.0.38
+asyncpg==0.30.0
 pytz==2024.1
-python-dotenv==1.0.1
+python-dotenv==1.1.0
+pydantic==2.10.6
+pydantic-core==2.27.2
+certifi>=2024.0.0
