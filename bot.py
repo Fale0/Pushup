@@ -276,7 +276,21 @@ def normalize_time(user_input: str) -> time:
             return val
     
     return time(8, 0)
-
+    
+def calculate_step_sets(base_reps: int) -> tuple:
+    """
+    Рассчитывает ступенчатые подходы по схеме:
+    Подход 1 = база
+    Подход 2 = база  
+    Подход 3 = база - 5 (для <40) или база * 0.8 (для >=40)
+    """
+    if base_reps <= 10:
+        return (base_reps, base_reps, max(3, base_reps - 2))
+    elif base_reps < 40:
+        return (base_reps, base_reps, max(5, base_reps - 5))
+    else:
+        return (base_reps, base_reps, max(int(base_reps * 0.8), base_reps - 10))
+        
 def to_utc(local_time: time, tz_str: str) -> time:
     """Конвертация локального времени в UTC"""
     try:
@@ -302,13 +316,13 @@ def from_utc(utc_time: time, tz_str: str) -> time:
         return utc_time
 
 def calculate_start_reps(max_reps: int) -> int:
-    """Расчет стартовой нагрузки"""
-    return max(3, int(max_reps * 0.5))
+    """Стартовая нагрузка = 80% от максимума, округлённая до 5"""
+    start = max(5, int(max_reps * 0.8))
+    return (start // 5) * 5
 
 def calculate_weekly_progression(current_reps: int) -> int:
-    """Расчет повышения нагрузки"""
-    increase = max(2, int(current_reps * 0.15))
-    return current_reps + increase
+    """Повышение на 5 отжиманий каждую неделю (как в таблице)"""
+    return current_reps + 5
 
 # ============ FSM STATES ============
 
@@ -483,6 +497,7 @@ async def finish_onboarding(message: Message, state: FSMContext, local_time: tim
     
     utc_time = to_utc(local_time, timezone)
     start_reps = calculate_start_reps(max_reps)
+    set1, set2, set3 = calculate_step_sets(start_reps)
     
     async with async_session() as session:
         new_user = User(
@@ -502,11 +517,13 @@ async def finish_onboarding(message: Message, state: FSMContext, local_time: tim
         f"🎉 Отлично, <b>{name}</b>! Регистрация завершена!\n\n"
         f"📊 <b>Твои данные:</b>\n"
         f"• Максимум отжиманий: {max_reps}\n"
-        f"• Стартовая нагрузка: 3 подхода по {start_reps}\n"
+        f"• Программа: {set1}-{set2}-{set3} отжиманий\n"
         f"• Напоминание: {local_time.strftime('%H:%M')}\n"
-        f"• Первая неделя программы\n\n"
-        f"💪 <b>Тренировка начинается сегодня!</b>\n"
-        f"Жми кнопку «🏋️ Тренировка» когда будешь готов!"
+        f"• Стартовая неделя программы\n\n"
+        f"💪 <b>Почему такая нагрузка?</b>\n"
+        f"Я использую проверенную методику ступенчатых подходов!\n"
+        f"Ты начнёшь с комфортных {set1}-{set2}-{set3}, и каждую неделю нагрузка будет расти.\n\n"
+        f"Готов? Жми «🏋️ Тренировка»!"
     )
     
     await message.answer(welcome, reply_markup=get_main_keyboard())
@@ -535,6 +552,49 @@ async def start_workout(message: Message, state: FSMContext):
             )
         )
         workout = workout.scalar_one_or_none()
+        
+        if workout and workout.completed:
+            await message.answer(
+                "✅ Ты уже молодец сегодня! Отдыхай до завтра.",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        # Если был день отдыха, но пользователь хочет тренироваться — отменяем отдых
+        if workout and workout.rest_day:
+            workout.rest_day = False
+            await message.answer(
+                "🔥 Отлично! Отменяю день отдыха — начинаем тренировку!\n"
+                "Отдых не потрачен, используешь в другой раз 💪"
+            )
+            # Не делаем return, продолжаем тренировку
+        
+        if not workout:
+            workout = Workout(user_id=user_id, date=today)
+            session.add(workout)
+        elif workout.rest_day:
+            # Сбрасываем rest_day и обновляем запись
+            workout.rest_day = False
+        
+        user.pending_step = 1
+        await session.commit()
+        
+        base_reps = user.current_reps_per_set
+        set1, set2, set3 = calculate_step_sets(base_reps)
+        
+        warmup = (
+            "🔥 <b>ВРЕМЯ ТРЕНИРОВКИ!</b>\n\n"
+            "<i>Быстрая разминка:</i>\n"
+            "• Вращение руками — 10 раз вперёд/назад\n"
+            "• Круговые движения плечами — 5 раз\n"
+            "• Разминка запястий — 10 секунд\n\n"
+            f"💪 <b>Подход 1 из 3:</b>\n"
+            f"Сделай {set1} отжиманий и нажми кнопку!"
+        )
+        
+        await message.answer(warmup, reply_markup=get_workout_keyboard(set1))
+        await state.set_state(WorkoutSession.waiting_for_set1)
+        await state.update_data(current_set=1, reps=[set1, set2, set3])
         
         if workout and workout.completed:
             await message.answer(
@@ -644,6 +704,9 @@ async def process_set_complete(message: Message, state: FSMContext, current_set:
         user = await session.execute(select(User).where(User.user_id == user_id))
         user = user.scalar_one()
         
+        data = await state.get_data()
+        reps_array = data.get("reps", [user.current_reps_per_set] * 3)
+        
         if current_set < 3:
             next_set = current_set + 1
             rest_seconds = user.rest_seconds
@@ -659,12 +722,12 @@ async def process_set_complete(message: Message, state: FSMContext, current_set:
             
             await asyncio.sleep(rest_seconds)
             
-            reps = user.current_reps_per_set
+            next_reps = reps_array[next_set - 1]
             await message.answer(
                 f"⏰ Время подхода!\n"
                 f"💪 <b>Подход {next_set} из 3:</b>\n"
-                f"Сделай {reps} отжиманий!",
-                reply_markup=get_workout_keyboard(reps)
+                f"Сделай {next_reps} отжиманий!",
+                reply_markup=get_workout_keyboard(next_reps)
             )
             
             set_state_name = f"waiting_for_set{next_set}"
@@ -905,6 +968,7 @@ async def show_settings(message: Message):
             return
         
         local_time = from_utc(user.reminder_time, user.timezone)
+        set1, set2, set3 = calculate_step_sets(user.current_reps_per_set)
         
         settings_text = (
             f"⚙️ <b>НАСТРОЙКИ</b>\n\n"
@@ -912,15 +976,43 @@ async def show_settings(message: Message):
             f"🕐 Время напоминания: {local_time.strftime('%H:%M')}\n"
             f"🌍 Часовой пояс: {user.timezone}\n"
             f"🔔 Напоминания: {'Вкл' if user.reminder_on else 'Выкл'}\n"
-            f"⏱ Отдых между подходами: {user.rest_seconds} сек"
+            f"⏱ Отдых между подходами: {user.rest_seconds} сек\n"
+            f"💪 Текущая нагрузка: {set1}-{set2}-{set3} отжиманий"
         )
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🕐 Изменить время", callback_data="change_time")],
-            [InlineKeyboardButton(text="🔔 Напоминания вкл/выкл", callback_data="toggle_remind")]
+            [InlineKeyboardButton(text="🔔 Напоминания вкл/выкл", callback_data="toggle_remind")],
+            [InlineKeyboardButton(text="⬆️ Повысить сложность", callback_data="increase_difficulty")],
+            [InlineKeyboardButton(text="🔧 Изменить отдых", callback_data="change_rest")]
         ])
         
         await message.answer(settings_text, reply_markup=keyboard)
+
+
+@router.callback_query(F.data == "increase_difficulty")
+async def increase_difficulty(callback: CallbackQuery):
+    """Ручное повышение сложности"""
+    user_id = callback.from_user.id
+    
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == user_id))
+        user = user.scalar_one()
+        
+        # Повышаем на 15%
+        new_reps = calculate_weekly_progression(user.current_reps_per_set)
+        user.current_reps_per_set = new_reps
+        await session.commit()
+        
+        set1, set2, set3 = calculate_step_sets(new_reps)
+    
+    await callback.answer("✅ Сложность повышена!")
+    await callback.message.answer(
+        f"⬆️ <b>Сложность повышена!</b>\n\n"
+        f"Новая нагрузка: {set1}-{set2}-{set3} отжиманий\n"
+        f"Так держать! 💪",
+        reply_markup=get_main_keyboard()
+    )
 
 @router.callback_query(F.data == "change_time")
 async def change_time(callback: CallbackQuery, state: FSMContext):
