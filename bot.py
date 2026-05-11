@@ -1214,7 +1214,7 @@ async def health_check(request):
     return web.Response(
         text=json.dumps({
             "status": "ok",
-            "timestamp": datetime.now(timezone.utc).isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "service": "PushUp Bot"
         }),
         content_type="application/json"
