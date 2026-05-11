@@ -8,7 +8,7 @@ import logging
 import sys
 import json
 import re
-from datetime import datetime, date, time, timedelta
+from datetime import datetime, date, time, timedelta, UTC
 from typing import Optional, List, Dict, Any
 
 # Aiogram imports
@@ -1079,7 +1079,8 @@ async def reminder_checker():
     
     while True:
         try:
-            utc_now = datetime.utcnow()
+            from datetime import UTC
+            utc_now = datetime.now(UTC)
             current_time = utc_now.time()
             current_date = utc_now.date()
             
@@ -1130,7 +1131,7 @@ async def weekly_reports():
     
     while True:
         try:
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             
             if now.weekday() == 6 and now.hour == 20 and now.minute == 0:
                 logger.info("Sending weekly reports...")
@@ -1213,7 +1214,7 @@ async def health_check(request):
     return web.Response(
         text=json.dumps({
             "status": "ok",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(UTC).isoformat()
             "service": "PushUp Bot"
         }),
         content_type="application/json"
