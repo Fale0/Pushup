@@ -194,10 +194,10 @@ def get_main_keyboard():
     )
 
 def get_workout_keyboard(reps: int):
+    """Клавиатура для тренировки БЕЗ кнопки пропуска"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"✅ Сделал {reps} отжиманий", callback_data=f"done_{reps}")],
-        [InlineKeyboardButton(text="📝 Написать свой результат", callback_data="custom_reps")],
-        [InlineKeyboardButton(text="⏭ Пропустить подход", callback_data="skip_set")]
+        [InlineKeyboardButton(text="📝 Написать свой результат", callback_data="custom_reps")]
     ])
 
 def get_time_keyboard():
@@ -332,9 +332,12 @@ async def cmd_start(message: Message, state: FSMContext):
             return
     
     await message.answer(
-        "👋 Привет! Я <b>Отжимайкин</b> — твой тренер по отжиманиям!\n\n"
+        "👋 Привет! Я <b>Отжимайкин</b> — твой персональный тренер по отжиманиям!\n\n"
+        "💪 Вместе мы сделаем тебя сильнее день за днём.\n"
+        "🎯 Я буду напоминать о тренировках, считать прогресс и поддерживать тебя.\n\n"
+        "<i>Давай познакомимся! Ответь на несколько вопросов:</i>\n\n"
         "❓ <b>Сколько отжиманий ты можешь сделать за один подход на максимум?</b>\n"
-        "Напиши число 😉"
+        "Напиши число. Не стесняйся, я твой личный тренер 😉"
     )
     await state.set_state(Onboarding.waiting_for_max_reps)
 
@@ -345,31 +348,44 @@ async def process_max_reps(message: Message, state: FSMContext):
         if reps < 1 or reps > 500:
             raise ValueError
         await state.update_data(max_reps=reps)
-        await message.answer(f"🔥 {reps} отжиманий! Как мне к тебе обращаться?")
+        await message.answer(
+            f"🔥 {reps} отжиманий — отличный старт!\n\n"
+            f"❓ <b>Как мне к тебе обращаться?</b>\n"
+            f"Напиши своё имя или никнейм:"
+        )
         await state.set_state(Onboarding.waiting_for_name)
     except ValueError:
-        await message.answer("❌ Введи целое число. Например: 15")
+        await message.answer("❌ Пожалуйста, введи целое число. Например: 15")
 
 @router.message(Onboarding.waiting_for_name)
 async def process_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text.strip()[:50])
-    await message.answer("Выбери часовой пояс:", reply_markup=get_timezone_keyboard())
+    await message.answer(
+        f"Приятно познакомиться, <b>{message.text.strip()[:50]}</b>! 😊\n\n"
+        f"❓ <b>Теперь выбери свой часовой пояс:</b>\n"
+        f"Это нужно, чтобы напоминания приходили вовремя.",
+        reply_markup=get_timezone_keyboard()
+    )
     await state.set_state(Onboarding.waiting_for_timezone)
 
 @router.callback_query(Onboarding.waiting_for_timezone)
 async def process_timezone_callback(callback: CallbackQuery, state: FSMContext):
     if callback.data == "tz_custom":
-        await callback.message.answer("Напиши свой город:")
+        await callback.message.answer("Напиши название своего города. Например: «Калининград», «Asia/Tokyo»")
         await callback.answer()
         return
     tz_str = callback.data.replace("tz_", "")
     try:
         pytz.timezone(tz_str)
         await state.update_data(timezone=tz_str)
-        await callback.message.answer("Во сколько напоминать?", reply_markup=get_time_keyboard())
+        await callback.message.answer(
+            f"✅ Часовой пояс установлен!\n\n"
+            f"❓ <b>Во сколько тебе удобно получать напоминания?</b>",
+            reply_markup=get_time_keyboard()
+        )
         await state.set_state(Onboarding.waiting_for_time)
     except:
-        await callback.message.answer("❌ Ошибка. Попробуй ещё раз.")
+        await callback.message.answer("❌ Ошибка. Попробуй ещё раз или напиши город.")
     await callback.answer()
 
 @router.message(Onboarding.waiting_for_timezone)
@@ -380,13 +396,17 @@ async def process_timezone_text(message: Message, state: FSMContext):
     except:
         tz_str = "Europe/Moscow"
     await state.update_data(timezone=tz_str)
-    await message.answer("Во сколько напоминать?", reply_markup=get_time_keyboard())
+    await message.answer(
+        f"✅ Часовой пояс установлен: {tz_str}\n\n"
+        f"❓ <b>Во сколько тебе удобно получать напоминания?</b>",
+        reply_markup=get_time_keyboard()
+    )
     await state.set_state(Onboarding.waiting_for_time)
 
 @router.callback_query(Onboarding.waiting_for_time)
 async def process_time_callback(callback: CallbackQuery, state: FSMContext):
     if callback.data == "time_custom":
-        await callback.message.answer("Напиши время в формате ЧЧ:ММ")
+        await callback.message.answer("Напиши время в формате ЧЧ:ММ\nНапример: 07:30 или 14:45")
         await callback.answer()
         return
     h, m = map(int, callback.data.replace("time_", "").split(":"))
@@ -412,10 +432,16 @@ async def finish_onboarding(message: Message, state: FSMContext, local_time: tim
         await session.commit()
     
     await message.answer(
-        f"🎉 Готово, {data['name']}!\n\n"
-        f"• Программа: {set1}-{set2}-{set3}\n"
-        f"• Напоминание: {local_time.strftime('%H:%M')}\n\n"
-        f"Жми «🏋️ Тренировка»!",
+        f"🎉 Отлично, <b>{data['name']}</b>! Регистрация завершена!\n\n"
+        f"📊 <b>Твои данные:</b>\n"
+        f"• Максимум отжиманий: {data['max_reps']}\n"
+        f"• Программа: {set1}-{set2}-{set3} отжиманий\n"
+        f"• Напоминание: {local_time.strftime('%H:%M')}\n"
+        f"• Стартовая неделя программы\n\n"
+        f"💪 <b>Почему такая нагрузка?</b>\n"
+        f"Я использую проверенную методику ступенчатых подходов!\n"
+        f"Ты начнёшь с комфортных {set1}-{set2}-{set3}, и каждую неделю нагрузка будет расти.\n\n"
+        f"Готов? Жми «🏋️ Тренировка»!",
         reply_markup=get_main_keyboard()
     )
     await state.clear()
@@ -438,7 +464,7 @@ async def start_workout_handler(event: Message | CallbackQuery, state: FSMContex
         user = await session.execute(select(User).where(User.user_id == user_id))
         user = user.scalar_one_or_none()
         if not user:
-            await message.answer("Сначала /start")
+            await message.answer("Сначала давай познакомимся! Нажми /start")
             return
         
         today = date.today()
@@ -448,12 +474,12 @@ async def start_workout_handler(event: Message | CallbackQuery, state: FSMContex
         workout = workout.scalar_one_or_none()
         
         if workout and workout.completed:
-            await message.answer("✅ Ты уже молодец сегодня!", reply_markup=get_main_keyboard())
+            await message.answer("✅ Ты уже молодец сегодня! Отдыхай до завтра.", reply_markup=get_main_keyboard())
             return
         
         if workout and workout.rest_day:
             workout.rest_day = False
-            await message.answer("🔥 Отменяю день отдыха — начинаем!")
+            await message.answer("🔥 Отлично! Отменяю день отдыха — начинаем тренировку!\nОтдых не потрачен, используешь в другой раз 💪")
         
         if not workout:
             workout = Workout(user_id=user_id, date=today)
@@ -466,40 +492,22 @@ async def start_workout_handler(event: Message | CallbackQuery, state: FSMContex
         
         await message.answer(
             f"🔥 <b>ВРЕМЯ ТРЕНИРОВКИ!</b>\n\n"
-            f"<i>Разминка: вращение руками, плечами, запястьями</i>\n\n"
-            f"💪 <b>Подход 1 из 3:</b> {set1} отжиманий",
+            f"<b>🎯 Разминка (обязательно!):</b>\n"
+            f"• Вращение руками — 10 раз вперёд и 10 назад\n"
+            f"• Круговые движения плечами — 5 раз в каждую сторону\n"
+            f"• Разминка запястий — вращение кистями 10 секунд\n"
+            f"• Наклоны корпуса в стороны — 5 раз\n\n"
+            f"💪 <b>Подход 1 из 3:</b>\n"
+            f"Сделай {set1} отжиманий и нажми кнопку!",
             reply_markup=get_workout_keyboard(set1)
         )
         await state.set_state(WorkoutSession.waiting_for_set1)
         await state.update_data(current_set=1, reps=[set1, set2, set3])
 
-@router.callback_query(F.data == "skip_set")
-async def skip_set(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    current_set = data.get("current_set", 1)
-    reps_data = data.get("reps", [10, 10, 5])
-    reps_array = reps_data if isinstance(reps_data, list) else [reps_data, reps_data, max(5, reps_data - 5)]
-    
-    await state.update_data({f"set{current_set}_reps": 0})
-    await callback.answer("Подход пропущен")
-    
-    if current_set >= 3:
-        await finish_workout(callback.message, state, callback.from_user.id)
-        return
-    
-    next_set = current_set + 1
-    next_reps = reps_array[next_set - 1]
-    await state.update_data(current_set=next_set)
-    await callback.message.answer(
-        f"😊 Ничего! 💪 <b>Подход {next_set} из 3:</b> {next_reps} отжиманий",
-        reply_markup=get_workout_keyboard(next_reps)
-    )
-    await state.set_state(getattr(WorkoutSession, f"waiting_for_set{next_set}"))
-
 @router.callback_query(F.data == "custom_reps")
 async def custom_reps_start(callback: CallbackQuery):
     await callback.answer()
-    await callback.message.answer("📝 Сколько сделал?")
+    await callback.message.answer("📝 Напиши, сколько отжиманий ты сделал в этом подходе:")
 
 @router.message(WorkoutSession.waiting_for_set1, F.text.regexp(r'^\d+$'))
 @router.message(WorkoutSession.waiting_for_set2, F.text.regexp(r'^\d+$'))
@@ -520,7 +528,7 @@ async def custom_reps_input(message: Message, state: FSMContext):
         else:
             await process_set_complete(message, state, current_set, message.from_user.id)
     except ValueError:
-        await message.answer("Введи целое число")
+        await message.answer("Пожалуйста, введи целое число отжиманий")
 
 @router.callback_query(F.data.regexp(r'done_\d+'))
 async def complete_set(callback: CallbackQuery, state: FSMContext):
@@ -537,8 +545,7 @@ async def complete_set(callback: CallbackQuery, state: FSMContext):
         await process_set_complete(callback.message, state, current_set, callback.from_user.id)
 
 async def process_set_complete(message: Message, state: FSMContext, current_set: int, user_id: int):
-    """Переход к следующему подходу. ВАЖНО: current_set здесь ещё СТАРЫЙ номер!"""
-    next_set = current_set + 1  # 1->2, 2->3
+    next_set = current_set + 1
     
     async with async_session() as session:
         user = await session.execute(select(User).where(User.user_id == user_id))
@@ -550,21 +557,31 @@ async def process_set_complete(message: Message, state: FSMContext, current_set:
         
         rest_seconds = user.rest_seconds
         
-        # Сначала обновляем состояние И базу ДО sleep
         await state.update_data(current_set=next_set)
         user.pending_step = next_set
         await session.commit()
         
-        # Устанавливаем следующее состояние FSM
         set_state_name = f"waiting_for_set{next_set}"
         await state.set_state(getattr(WorkoutSession, set_state_name))
         
-        await message.answer(f"😌 <b>Отдыхай {rest_seconds} сек</b> 💤")
+        # Заминка после 1-го подхода
+        if next_set == 2:
+            await message.answer(
+                f"✅ Первый подход сделан!\n\n"
+                f"<b>🧘 Заминка:</b>\n"
+                f"• Встряхни руки, расслабь плечи\n"
+                f"• Сделай 2-3 глубоких вдоха\n\n"
+                f"😌 <b>Отдыхай {rest_seconds} секунд</b> 💤"
+            )
+        else:
+            await message.answer(f"😌 <b>Отдыхай {rest_seconds} секунд</b> 💤")
+        
         await asyncio.sleep(rest_seconds)
         
         next_reps = reps_array[next_set - 1]
         await message.answer(
-            f"⏰ <b>Подход {next_set} из 3:</b> {next_reps} отжиманий!",
+            f"⏰ <b>Подход {next_set} из 3:</b>\n"
+            f"Сделай {next_reps} отжиманий!",
             reply_markup=get_workout_keyboard(next_reps)
         )
 
@@ -594,9 +611,17 @@ async def finish_workout(message: Message, state: FSMContext, user_id: int):
     await state.set_state(WorkoutSession.waiting_for_feedback)
     await message.answer(
         f"🎉 <b>ТРЕНИРОВКА ЗАВЕРШЕНА!</b>\n\n"
-        f"📊 {workout.set1_reps} — {workout.set2_reps} — {workout.set3_reps}\n"
-        f"🔥 Всего: <b>{total}</b> отжиманий!\n\n"
-        f"💭 Как прошло?",
+        f"📊 Твои результаты:\n"
+        f"• Подход 1: {workout.set1_reps} отж.\n"
+        f"• Подход 2: {workout.set2_reps} отж.\n"
+        f"• Подход 3: {workout.set3_reps} отж.\n"
+        f"• <b>Всего: {total} отжиманий</b> 🔥\n\n"
+        f"<b>🧘 Не забудь заминку:</b>\n"
+        f"• Растяни грудные мышцы и трицепс\n"
+        f"• Сделай наклоны вперёд\n"
+        f"• Выпей воды!\n\n"
+        f"💭 <b>Как прошла тренировка?</b>\n"
+        f"Напиши: всё сделал, были сложности или просто поделись ощущениями.",
         reply_markup=ReplyKeyboardRemove()
     )
 
@@ -710,6 +735,15 @@ async def show_progress(message: Message):
         completed = sum(1 for w in workouts if w.completed)
         total_reps = sum(w.set1_reps + w.set2_reps + w.set3_reps for w in workouts if w.completed)
         
+        streak = 0
+        check_date = date.today()
+        for w in workouts:
+            if w.date == check_date and w.completed:
+                streak += 1
+                check_date -= timedelta(days=1)
+            elif w.date < check_date:
+                break
+        
         set1, set2, set3 = calculate_step_sets(user.current_reps_per_set)
         
         await message.answer(
@@ -717,9 +751,10 @@ async def show_progress(message: Message):
             f"🏆 Неделя: {user.current_week}\n"
             f"💪 Нагрузка: {set1}-{set2}-{set3}\n"
             f"⭐ Рекорд: {user.max_reps}\n\n"
-            f"📈 Неделя: {completed}/7 тренировок\n"
-            f"🔥 Отжиманий: {total_reps}\n\n"
-            f"<i>Продолжай!</i>",
+            f"📈 Эта неделя: {completed}/7 тренировок\n"
+            f"🔥 Всего отжиманий: {total_reps}\n"
+            f"📅 Дней подряд: {streak}\n\n"
+            f"<i>Продолжай в том же духе!</i>",
             reply_markup=get_main_keyboard()
         )
 
@@ -732,7 +767,7 @@ async def show_achievements(message: Message):
         if not ach:
             await message.answer("🎯 Пока нет достижений. Начни тренироваться!", reply_markup=get_main_keyboard())
             return
-        text = "\n".join([f"• {a.title}" for a in ach])
+        text = "\n".join([f"• {a.title} — {a.awarded_at.strftime('%d.%m.%Y')}" for a in ach])
         await message.answer(f"🏆 <b>ДОСТИЖЕНИЯ</b>\n\n{text}", reply_markup=get_main_keyboard())
 
 async def check_achievements(user_id: int, session: AsyncSession):
@@ -908,7 +943,13 @@ async def rest_day(message: Message):
             session.add(Workout(user_id=user_id, date=today, rest_day=True))
         await session.commit()
     
-    await message.answer("😴 День отдыха! Можно начать тренировку в любой момент.", reply_markup=get_main_keyboard())
+    await message.answer(
+        "😴 <b>День отдыха активирован!</b>\n\n"
+        "Восстановление — важная часть прогресса.\n"
+        "Если захочешь потренироваться — просто нажми «🏋️ Тренировка».\n"
+        "Возвращайся с новыми силами! 💪",
+        reply_markup=get_main_keyboard()
+    )
 
 @router.message(F.text == "❓ Помощь")
 @router.message(Command("help"))
@@ -942,7 +983,9 @@ async def reminder_checker():
                             set1, set2, set3 = calculate_step_sets(user.current_reps_per_set)
                             await bot.send_message(
                                 user.user_id,
-                                f"🔔 {user.name}, время тренировки!\nСегодня: {set1}-{set2}-{set3} 🔥",
+                                f"🔔 {user.name}, время размять плечи!\n\n"
+                                f"Сегодня: {set1}-{set2}-{set3} отжиманий.\n"
+                                f"Жду тебя! 🔥",
                                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                                     InlineKeyboardButton(text="🏋️ Начать", callback_data="start_workout")
                                 ]])
