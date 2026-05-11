@@ -705,7 +705,14 @@ async def process_set_complete(message: Message, state: FSMContext, current_set:
         user = user.scalar_one()
         
         data = await state.get_data()
-        reps_array = data.get("reps", [user.current_reps_per_set] * 3)
+        reps_data = data.get("reps", user.current_reps_per_set)
+        
+        # Проверяем, массив это или одно число
+        if isinstance(reps_data, list):
+            reps_array = reps_data
+        else:
+            # Если это одно число (старый формат) — создаём массив
+            reps_array = [reps_data, reps_data, max(5, reps_data - 5)]
         
         if current_set < 3:
             next_set = current_set + 1
@@ -722,7 +729,7 @@ async def process_set_complete(message: Message, state: FSMContext, current_set:
             
             await asyncio.sleep(rest_seconds)
             
-            next_reps = reps_array[next_set - 1]
+            next_reps = reps_array[next_set - 1] if next_set - 1 < len(reps_array) else reps_array[-1]
             await message.answer(
                 f"⏰ Время подхода!\n"
                 f"💪 <b>Подход {next_set} из 3:</b>\n"
