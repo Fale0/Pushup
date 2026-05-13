@@ -4,7 +4,8 @@
 - корректный user_id при нажатии "Начать" из уведомления
 - часовые пояса (включая "New York")
 - контекст диалога без повторов старых ответов
-- меню с resize_keyboard=True
+- правильный расчёт серии дней подряд (streak)
+- исправлены отступы, вызывавшие IndentationError
 """
 
 import asyncio
@@ -513,7 +514,7 @@ async def start_workout_handler(event: Union[Message, CallbackQuery], state: FSM
     else:
         message = event
 
-    user_id = event.from_user.id      # <-- ИСПРАВЛЕНО (раньше было message.from_user.id)
+    user_id = event.from_user.id
 
     async with async_session() as session:
         user = await session.execute(select(User).where(User.user_id == user_id))
@@ -683,7 +684,6 @@ async def finish_workout(message: Message, state: FSMContext, user_id: int):
 async def process_workout_feedback(message: Message, state: FSMContext):
     user_id = message.from_user.id
     async with async_session() as session:
-        # Получаем последние 4 сообщения, чтобы не захламлять контекст
         hist = await session.execute(
             select(DialogueHistory).where(DialogueHistory.user_id == user_id)
             .order_by(DialogueHistory.timestamp.desc()).limit(4)
@@ -787,7 +787,8 @@ async def show_progress(message: Message):
         completed = sum(1 for w in workouts if w.completed)
         total_reps = sum(w.set1_reps + w.set2_reps + w.set3_reps for w in workouts if w.completed)
 
-      all_completed = await session.execute(
+        # Новый расчёт серии дней подряд
+        all_completed = await session.execute(
             select(Workout.date).where(
                 Workout.user_id == user_id,
                 Workout.completed == True,
@@ -797,7 +798,6 @@ async def show_progress(message: Message):
         completed_days = [row[0] for row in all_completed.all()]
         streak = 0
         if completed_days:
-            # Серия продолжается, если последняя завершённая тренировка была сегодня или вчера
             last_date = completed_days[0]
             if last_date >= date.today() - timedelta(days=1):
                 streak = 1
