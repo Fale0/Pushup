@@ -787,14 +787,27 @@ async def show_progress(message: Message):
         completed = sum(1 for w in workouts if w.completed)
         total_reps = sum(w.set1_reps + w.set2_reps + w.set3_reps for w in workouts if w.completed)
 
+      all_completed = await session.execute(
+            select(Workout.date).where(
+                Workout.user_id == user_id,
+                Workout.completed == True,
+                Workout.date >= date.today() - timedelta(days=30)
+            ).order_by(Workout.date.desc())
+        )
+        completed_days = [row[0] for row in all_completed.all()]
         streak = 0
-        check_date = date.today()
-        for w in workouts:
-            if w.date == check_date and w.completed:
-                streak += 1
-                check_date -= timedelta(days=1)
-            elif w.date < check_date:
-                break
+        if completed_days:
+            # Серия продолжается, если последняя завершённая тренировка была сегодня или вчера
+            last_date = completed_days[0]
+            if last_date >= date.today() - timedelta(days=1):
+                streak = 1
+                check = last_date - timedelta(days=1)
+                for d in completed_days[1:]:
+                    if d == check:
+                        streak += 1
+                        check -= timedelta(days=1)
+                    else:
+                        break
 
         set1, set2, set3 = calculate_step_sets(user.current_reps_per_set)
         await message.answer(
@@ -840,22 +853,29 @@ async def check_achievements(user_id: int, session: AsyncSession):
         session.add(Achievement(user_id=user_id, title="💎 10 дней подряд", description="Железная воля!"))
 
 async def calculate_streak(user_id: int, session: AsyncSession) -> int:
-    workouts = (await session.execute(
-        select(Workout).where(Workout.user_id == user_id, Workout.completed == True)
-        .order_by(Workout.date.desc())
+    """Возвращает текущую серию дней с выполненными тренировками."""
+    completed = (await session.execute(
+        select(Workout.date).where(
+            Workout.user_id == user_id,
+            Workout.completed == True
+        ).order_by(Workout.date.desc())
     )).scalars().all()
-    if not workouts:
+    
+    if not completed:
         return 0
-    streak = 1
-    d = date.today() - timedelta(days=1)
-    for w in workouts:
-        if w.date == date.today():
-            continue
-        if w.date == d:
-            streak += 1
-            d -= timedelta(days=1)
-        else:
-            break
+    
+    streak = 0
+    last_date = completed[0]
+    # Серия жива, если последняя тренировка была не раньше вчера
+    if last_date >= date.today() - timedelta(days=1):
+        streak = 1
+        check = last_date - timedelta(days=1)
+        for d in completed[1:]:
+            if d == check:
+                streak += 1
+                check -= timedelta(days=1)
+            else:
+                break
     return streak
 
 # ---------- SETTINGS ----------
