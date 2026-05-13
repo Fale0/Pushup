@@ -1,6 +1,10 @@
 """
 Отжимайкин — Telegram-бот для тренировок отжиманий
-Исправления: корректный user_id, часовые пояса, контекст диалога, меню
+Полный код с исправлениями:
+- корректный user_id при нажатии "Начать" из уведомления
+- часовые пояса (включая "New York")
+- контекст диалога без повторов старых ответов
+- меню с resize_keyboard=True
 """
 
 import asyncio
@@ -499,7 +503,6 @@ async def finish_onboarding(message: Message, state: FSMContext, local_time: tim
     await state.clear()
 
 # ---------- WORKOUT HANDLERS ----------
-# Исправлено: всегда берём event.from_user.id
 @router.message(F.text == "🏋️ Тренировка")
 @router.callback_query(F.data == "start_workout")
 @router.message(Command("workout"))
@@ -555,10 +558,6 @@ async def start_workout_handler(event: Union[Message, CallbackQuery], state: FSM
         )
         await state.set_state(WorkoutSession.waiting_for_set1)
         await state.update_data(current_set=1, reps=[set1, set2, set3])
-
-# Остальные обработчики подходов и заминки без изменений, за исключением user_id = event.from_user.id внутри колбэков (уже через callback.from_user)
-# ...
-# Приведу только те, где требовалась корректировка.
 
 @router.callback_query(F.data == "custom_reps")
 async def custom_reps_start(callback: CallbackQuery):
@@ -679,7 +678,7 @@ async def finish_workout(message: Message, state: FSMContext, user_id: int):
         reply_markup=ReplyKeyboardRemove()
     )
 
-# ---------- FEEDBACK (исправлен контекст) ----------
+# ---------- FEEDBACK ----------
 @router.message(WorkoutSession.waiting_for_feedback)
 async def process_workout_feedback(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -752,7 +751,6 @@ async def chat_with_trainer(message: Message, state: FSMContext):
         if last_w:
             context += f" Последняя тренировка: {last_w.date.strftime('%d.%m')}: {last_w.set1_reps}-{last_w.set2_reps}-{last_w.set3_reps}."
 
-        # Последние 6 сообщений для чата, но директива в промпте уже ограничивает повторы
         hist = await session.execute(
             select(DialogueHistory).where(DialogueHistory.user_id == user_id)
             .order_by(DialogueHistory.timestamp.desc()).limit(6)
@@ -767,7 +765,7 @@ async def chat_with_trainer(message: Message, state: FSMContext):
 
     await message.answer(ai_response, reply_markup=get_chat_keyboard())
 
-# ---------- PROGRESS / ACHIEVEMENTS (без изменений) ----------
+# ---------- PROGRESS & ACHIEVEMENTS ----------
 @router.message(F.text == "📊 Прогресс")
 @router.message(Command("progress"))
 async def show_progress(message: Message):
@@ -789,7 +787,6 @@ async def show_progress(message: Message):
         completed = sum(1 for w in workouts if w.completed)
         total_reps = sum(w.set1_reps + w.set2_reps + w.set3_reps for w in workouts if w.completed)
 
-        # Серия дней подряд
         streak = 0
         check_date = date.today()
         for w in workouts:
@@ -892,9 +889,141 @@ async def show_settings(message: Message):
             ])
         )
 
-# ... все остальные хендлеры настроек, отдыха и помощи без изменений ...
+@router.callback_query(F.data == "increase_difficulty")
+async def increase_difficulty(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == user_id))
+        user = user.scalar_one()
+        user.current_reps_per_set = calculate_weekly_progression(user.current_reps_per_set)
+        await session.commit()
+        set1, set2, set3 = calculate_step_sets(user.current_reps_per_set)
+    await callback.answer("✅")
+    await callback.message.answer(f"⬆️ Нагрузка: {set1}-{set2}-{set3}", reply_markup=get_main_keyboard())
 
-# ---------- BACKGROUND ----------
+@router.callback_query(F.data == "decrease_difficulty")
+async def decrease_difficulty(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == user_id))
+        user = user.scalar_one()
+        new_reps = calculate_decrease_reps(user.current_reps_per_set)
+        if new_reps == user.current_reps_per_set:
+            await callback.answer("⚠️ Минимум!")
+            return
+        user.current_reps_per_set = new_reps
+        await session.commit()
+        set1, set2, set3 = calculate_step_sets(new_reps)
+    await callback.answer("✅")
+    await callback.message.answer(f"⬇️ Нагрузка: {set1}-{set2}-{set3}", reply_markup=get_main_keyboard())
+
+@router.callback_query(F.data == "change_rest")
+async def change_rest(callback: CallbackQuery):
+    await callback.answer()
+    await callback.message.answer("⏱ Выбери отдых:", reply_markup=get_rest_keyboard())
+
+@router.callback_query(F.data.regexp(r'rest_\d+'))
+async def process_rest_change(callback: CallbackQuery):
+    sec = int(callback.data.split("_")[1])
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == callback.from_user.id))
+        user = user.scalar_one()
+        user.rest_seconds = sec
+        await session.commit()
+    await callback.answer(f"✅ {sec} сек")
+    await callback.message.answer(f"⏱ Отдых: {sec} сек", reply_markup=get_main_keyboard())
+
+@router.callback_query(F.data == "change_time")
+async def change_time(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("🕐 Выбери время:", reply_markup=get_time_keyboard())
+    await state.set_state(Settings.waiting_for_time)
+
+@router.callback_query(Settings.waiting_for_time)
+async def process_new_time(callback: CallbackQuery, state: FSMContext):
+    if callback.data == "time_custom":
+        await callback.message.answer("Напиши время в формате ЧЧ:ММ")
+        await callback.answer()
+        return
+    h, m = map(int, callback.data.replace("time_", "").split(":"))
+    await save_new_time(callback.message, state, time(h, m), callback.from_user.id)
+    await callback.answer()
+
+@router.message(Settings.waiting_for_time)
+async def process_custom_time(message: Message, state: FSMContext):
+    await save_new_time(message, state, normalize_time(message.text), message.from_user.id)
+
+async def save_new_time(message: Message, state: FSMContext, local_time: time, user_id: int):
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == user_id))
+        user = user.scalar_one()
+        user.reminder_time = to_utc(local_time, user.timezone)
+        await session.commit()
+    await message.answer(f"✅ Время: {local_time.strftime('%H:%M')}", reply_markup=get_main_keyboard())
+    await state.clear()
+
+@router.callback_query(F.data == "toggle_remind")
+async def toggle_reminders(callback: CallbackQuery):
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == callback.from_user.id))
+        user = user.scalar_one()
+        user.reminder_on = not user.reminder_on
+        await session.commit()
+        s = "вкл" if user.reminder_on else "выкл"
+    await callback.answer(f"🔔 {s}!")
+    await callback.message.answer(f"🔔 Напоминания {s}!", reply_markup=get_main_keyboard())
+
+# ---------- REST & HELP ----------
+@router.message(F.text == "😴 Отдых")
+@router.message(Command("restday"))
+async def rest_day(message: Message):
+    user_id = message.from_user.id
+    today = date.today()
+    async with async_session() as session:
+        count = (await session.execute(
+            select(func.count(Workout.id)).where(
+                Workout.user_id == user_id,
+                Workout.rest_day == True,
+                Workout.date >= today - timedelta(days=10)
+            )
+        )).scalar()
+        if count:
+            await message.answer("😴 Уже отдыхал недавно (раз в 10 дней).", reply_markup=get_main_keyboard())
+            return
+
+        existing = await session.execute(
+            select(Workout).where(Workout.user_id == user_id, Workout.date == today)
+        )
+        existing = existing.scalar_one_or_none()
+        if existing:
+            existing.rest_day = True
+        else:
+            session.add(Workout(user_id=user_id, date=today, rest_day=True))
+        await session.commit()
+
+    await message.answer(
+        "😴 <b>День отдыха активирован!</b>\n\n"
+        "Восстановление — важная часть прогресса.\n"
+        "Если захочешь потренироваться — просто нажми «🏋️ Тренировка».\n"
+        "Возвращайся с новыми силами! 💪",
+        reply_markup=get_main_keyboard()
+    )
+
+@router.message(F.text == "❓ Помощь")
+@router.message(Command("help"))
+async def show_help(message: Message):
+    await message.answer(
+        "🤖 <b>ОТЖИМАЙКИН</b>\n\n"
+        "🏋️ /workout — тренировка\n"
+        "📊 /progress — прогресс\n"
+        "💬 Общение — чат с ИИ\n"
+        "⚙️ /settings — настройки\n"
+        "😴 /restday — отдых\n\n"
+        "💡 3 ступенчатых подхода, +5 в неделю, ачивки!",
+        reply_markup=get_main_keyboard()
+    )
+
+# ---------- BACKGROUND TASKS ----------
 async def reminder_checker():
     logger.info("Reminder checker started")
     while True:
@@ -937,8 +1066,10 @@ async def weekly_reports():
                     for user in users:
                         try:
                             workouts = (await session.execute(
-                                select(Workout).where(Workout.user_id == user.user_id,
-                                                       Workout.date >= now.date() - timedelta(days=7))
+                                select(Workout).where(
+                                    Workout.user_id == user.user_id,
+                                    Workout.date >= now.date() - timedelta(days=7)
+                                )
                             )).scalars().all()
                             completed = sum(1 for w in workouts if w.completed)
                             total = sum(w.set1_reps + w.set2_reps + w.set3_reps for w in workouts if w.completed)
