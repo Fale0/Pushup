@@ -355,6 +355,8 @@ class WorkoutSession(StatesGroup):
 
 class Settings(StatesGroup):
     waiting_for_time = State()
+    waiting_for_name = State()
+    waiting_for_timezone = State()
 
 class ChatMode(StatesGroup):
     chatting = State()
@@ -905,8 +907,10 @@ async def show_settings(message: Message):
                 [InlineKeyboardButton(text="🔔 Напоминания", callback_data="toggle_remind")],
                 [InlineKeyboardButton(text="🔧 Отдых", callback_data="change_rest")],
                 [InlineKeyboardButton(text="⬆️ Сложнее", callback_data="increase_difficulty")],
-                [InlineKeyboardButton(text="⬇️ Легче", callback_data="decrease_difficulty")]
-            ])
+                [InlineKeyboardButton(text="⬇️ Легче", callback_data="decrease_difficulty")],
+                [InlineKeyboardButton(text="✏️ Имя", callback_data="change_name")],
+                [InlineKeyboardButton(text="🌍 Часовой пояс", callback_data="change_timezone")]
+        ])
         )
 
 @router.callback_query(F.data == "increase_difficulty")
@@ -992,7 +996,71 @@ async def toggle_reminders(callback: CallbackQuery):
         s = "вкл" if user.reminder_on else "выкл"
     await callback.answer(f"🔔 {s}!")
     await callback.message.answer(f"🔔 Напоминания {s}!", reply_markup=get_main_keyboard())
+# ---------- CHANGE NAME ----------
+@router.callback_query(F.data == "change_name")
+async def change_name_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("✏️ Введи новое имя:")
+    await state.set_state(Settings.waiting_for_name)
 
+@router.message(Settings.waiting_for_name)
+async def process_new_name(message: Message, state: FSMContext):
+    new_name = message.text.strip()[:50]
+    if not new_name:
+        await message.answer("❌ Имя не может быть пустым. Попробуй ещё раз.")
+        return
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == message.from_user.id))
+        user = user.scalar_one()
+        user.name = new_name
+        await session.commit()
+    await message.answer(f"✅ Имя изменено на <b>{new_name}</b>", reply_markup=get_main_keyboard())
+    await state.clear()
+
+# ---------- CHANGE TIMEZONE ----------
+@router.callback_query(F.data == "change_timezone")
+async def change_timezone_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.answer("🌍 Выбери новый часовой пояс:", reply_markup=get_timezone_keyboard())
+    await state.set_state(Settings.waiting_for_timezone)
+
+@router.callback_query(Settings.waiting_for_timezone)
+async def process_new_timezone_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.data == "tz_custom":
+        await callback.message.answer("Напиши название города или часового пояса:")
+        await callback.answer()
+        return
+    tz_str = callback.data.replace("tz_", "")
+    try:
+        pytz.timezone(tz_str)
+        await save_new_timezone(callback.message, state, tz_str, callback.from_user.id)
+    except pytz.UnknownTimeZoneError:
+        await callback.message.answer("❌ Неизвестный часовой пояс. Попробуй ещё раз.")
+    await callback.answer()
+
+@router.message(Settings.waiting_for_timezone)
+async def process_new_timezone_text(message: Message, state: FSMContext):
+    tz_str = normalize_timezone(message.text)
+    if tz_str is None:
+        await message.answer("❌ Не удалось определить. Попробуй снова.")
+        return
+    await save_new_timezone(message, state, tz_str, message.from_user.id)
+
+async def save_new_timezone(message: Message, state: FSMContext, tz_str: str, user_id: int):
+    async with async_session() as session:
+        user = await session.execute(select(User).where(User.user_id == user_id))
+        user = user.scalar_one()
+        user.timezone = tz_str
+        # Время напоминания остаётся в UTC, локальное отображение изменится автоматически
+        await session.commit()
+        local_time = from_utc(user.reminder_time, tz_str)
+    await message.answer(
+        f"✅ Часовой пояс изменён на {tz_str}\n"
+        f"Текущее время напоминания: {local_time.strftime('%H:%M')} (по местному)",
+        reply_markup=get_main_keyboard()
+    )
+    await state.clear()
+    
 # ---------- REST & HELP ----------
 @router.message(F.text == "😴 Отдых")
 @router.message(Command("restday"))
